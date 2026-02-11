@@ -45,7 +45,7 @@ To add all external `.jar` files for build and run environment, right-click on t
 To ensure that the user receives only a **single file** (`e.g. PepperSelfie.jar`), you must select **Export as Runnable JAR File** in Eclipse. Here is the crucial path:
 
 1. **Right-click on your project** -> `Export...` -> `Java` -> `Runnable JAR file`.
-2. **Launch configuration**: Select the configuration with which you successfully tested your program in Eclipse (usually `PepperSelfie`).
+2. **Launch configuration**: Select the configuration with which you successfully tested your program in Eclipse (usually `PepperSelfie - PepperSelfie`).
 3. **Export destination**: Choose your export destination and choose a name for your runnable JAR file (e.g. `PepperSelfie.jar`).
 4. **Library handling**: This is the most important point for your goal. You have three options:
 * `Extract required libraries into generated JAR` (choose this)
