@@ -1,9 +1,14 @@
-pepperIP: 127.0.0.1
-pepperPort: 44413
-printerIP: "192.168.1.50"
-imageText: SmartHome Labor
-imageDate: 05.02.2026
-positionX: 450
+pepperIP: 192.168.0.41
+pepperPort: 9559
+pepperUser: nao
+pepperPassword: P3pp3r2!
+sshPort: 22
+
+printerIP: 192.168.0.48
 width: 50
 height: 75
 numberImages: 1
+
+imageText: Labor Smart Home
+imageDate: 11.02.2026
+positionX: 450
