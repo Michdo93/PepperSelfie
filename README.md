@@ -18,15 +18,20 @@ Interactive Java application with the Pepper robot (1.8a and NAOqi 2.5) for taki
 You can change the `PepperSelfie.yaml` file. As example it looks currently like this:
 
 ```
-pepperIP: 127.0.0.1
-pepperPort: 44413
-printerIP: "192.168.1.50"
-imageText: Labor Smart Home
-imageDate: 10.02.2026
-positionX: 450
+pepperIP: 192.168.0.41
+pepperPort: 9559
+pepperUser: nao
+pepperPassword: nao
+sshPort: 22
+
+printerIP: 192.168.0.48
 width: 50
 height: 75
 numberImages: 1
+
+imageText: Labor Smart Home
+imageDate: 11.02.2026
+positionX: 450
 ```
 
 The `pepperIP` and `pepperPort` should be changed because this values are for simulation. The default pepperPort is `9559` so you have to change this configuration to `9559`. The `pepperIP` you can receive from the Pepper robot by pressing its chest button.
