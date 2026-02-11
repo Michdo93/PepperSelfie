@@ -1,238 +1,244 @@
 import com.aldebaran.qi.Application;
 import com.aldebaran.qi.Session;
 import com.aldebaran.qi.helper.proxies.*;
-import org.cfg4j.provider.ConfigurationProvider;
-import org.cfg4j.provider.ConfigurationProviderBuilder;
-import org.cfg4j.source.files.FilesConfigurationSource;
+import com.jcraft.jsch.*;
+import org.freedesktop.gstreamer.*;
+import org.freedesktop.gstreamer.elements.AppSink;
+import javax.swing.*;
 import java.awt.image.BufferedImage;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 public class PepperSelfie {
-
-    public static PepperSelfieConfig config; 
-    
+    public static PepperSelfieConfig config;
     private WebStreamer webStreamer;
     private final Application application;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
-    
+
+    // QiSDK Proxies
     private ALMemory memory;
-    private ALVideoDevice video;
     private ALMotion motion;
     private ALAnimatedSpeech animatedSpeech;
     private ALRobotPosture posture;
-    // private ALSpeechRecognition speechRecognition; // Optional wieder einklammern falls nötig
-    private ALBehaviorManager behaviorManager;
+    private ALTextToSpeech tts;
+    private ALSpeechRecognition speechRecognition;
 
-    private String cameraHandle;
-    private ImagePlayer imageWindow;
-    private boolean isStopping = false;
+    // GStreamer & SSH
+    private Pipeline pipeline;
+    private com.jcraft.jsch.Session sshSession;
+    private BufferedImage capturedImage = null;
+    
     private boolean isPreviewRunning = false;
-    private static final String APP_HANDLE = "PepperSelfie_v3_Optimized";
+    private boolean isWaitingForConfirmation = false;
+    private static final String APP_HANDLE = "PepperSelfie_Gst";
 
     public PepperSelfie(String[] args) throws Exception {
-        config = loadConfiguration();
+        config = Util.loadConfiguration();
         String url = String.format("tcp://%s:%s", config.pepperIP(), config.pepperPort());
         this.application = new Application(args, url);
+        Gst.init("PepperSelfie"); // GStreamer Engine starten
     }
 
     public static void main(String[] args) {
         try {
             PepperSelfie selfieApp = new PepperSelfie(args);
             selfieApp.run();
-        } catch (Exception e) {
-            System.err.println("Kritischer Fehler beim Start:");
-            e.printStackTrace();
-        }
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
     public void run() throws Exception {
         application.start();
         initProxies(application.session());
         setupRobot();
-        
-        // Kopf-Sensoren für den Start
+
+        // Kopf-Touch startet den Prozess
         memory.subscribeToEvent("FrontTactilTouched", (touch) -> {
-            if (touch instanceof Float && (Float) touch == 1.0f) {
-                if (!isPreviewRunning) startSelfieProcess();
+            if (touch instanceof Float && (Float) touch == 1.0f && !isPreviewRunning) {
+                startSelfieProcess();
             }
         });
 
-        memory.subscribeToEvent("RearTactilTouched", (touch) -> {
-            if (touch instanceof Float && (Float) touch == 1.0f) stopApplication();
+        // Bumper für Bestätigung/Abbruch
+        memory.subscribeToEvent("RightBumperPressed", (val) -> {
+            if (val instanceof Float && (Float) val == 1.0f && isWaitingForConfirmation) confirmAndPrint();
         });
-        
-        System.out.println("Anwendung bereit. Warte auf Kopf-Touch...");
+
+        memory.subscribeToEvent("LeftBumperPressed", (val) -> {
+            if (val instanceof Float && (Float) val == 1.0f && isWaitingForConfirmation) rejectAndRestart();
+        });
+
         application.run();
     }
 
     private void initProxies(Session session) throws Exception {
         memory = new ALMemory(session);
-        video = new ALVideoDevice(session);
         motion = new ALMotion(session);
         animatedSpeech = new ALAnimatedSpeech(session);
         posture = new ALRobotPosture(session);
-        behaviorManager = new ALBehaviorManager(session);
+        tts = new ALTextToSpeech(session);
+        speechRecognition = new ALSpeechRecognition(session);
     }
 
     private void setupRobot() throws Exception {
-        imageWindow = new ImagePlayer("Pepper Selfie Preview", "Vorschau");
-        
-        // WebServer initialisieren (Real-Live Modus)
-        this.webStreamer = new WebStreamer(); 
-        
+        this.webStreamer = new WebStreamer();
         motion.wakeUp();
         posture.goToPosture("StandInit", 0.5f);
-        animatedSpeech.say("Das System ist bereit.");
+        tts.say("System bereit.");
     }
 
     private void startSelfieProcess() {
         try {
             isPreviewRunning = true;
-            
-            // REAL-LIVE: Echte Kamera abonnieren (Res 3 = HD, 11 = RGB)
-            cameraHandle = video.subscribeCamera(APP_HANDLE, 0, 3, 11, 15);
-            
-            startLivePreview();
-            
-            animatedSpeech.say("Bitte stellen Sie sich vor mich auf.");
+            isWaitingForConfirmation = false;
 
-            // Falls du doch wieder Sprache nutzen willst, hier einklammern:
-            /*
+            // 1. SSH-Sender auf Pepper & Lokalen Empfänger starten
+            startRemoteGStreamer();
+            startLocalPipeline();
+
+            // Spracherkennung
+            speechRecognition.setLanguage("German");
+            ArrayList<String> vocabulary = new ArrayList<>();
+            vocabulary.add("Foto aufnehmen");
+            vocabulary.add("Selfie");
+            speechRecognition.setVocabulary(vocabulary, false);
+
             memory.subscribeToEvent("WordRecognized", (words) -> {
                 List<Object> data = (List<Object>) words;
-                if (data.size() > 1 && (Float) data.get(1) > 0.4f) {
-                    try { takeAndPrintPicture(); } catch (Exception e) { e.printStackTrace(); }
+                if (data.size() > 1 && (Float) data.get(1) > 0.45f && !isWaitingForConfirmation) {
+                    takeAndShowPicture();
                 }
             });
-            */
-            
-            // Zum Testen: Foto nach 10 Sekunden automatisch auslösen
-            scheduler.schedule(() -> {
-                try { takeAndPrintPicture(); } catch (Exception e) { e.printStackTrace(); }
-            }, 10, TimeUnit.SECONDS);
 
-        } catch (Exception e) {
-            System.err.println("Fehler beim Starten der Kamera: " + e.getMessage());
-        }
+            animatedSpeech.say("Sagen Sie Foto aufnehmen.");
+            speechRecognition.subscribe(APP_HANDLE);
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
-    private void startLivePreview() {
-        scheduler.scheduleAtFixedRate(() -> {
-            try {
-                if (isStopping || cameraHandle == null) return;
+    private void startRemoteGStreamer() throws Exception {
+        JSch jsch = new JSch();
+        sshSession = jsch.getSession(config.pepperUser(), config.pepperIP(), config.sshPort());
+        sshSession.setPassword(config.pepperPassword());
+        sshSession.setConfig("StrictHostKeyChecking", "no");
+        sshSession.connect();
 
-                // REAL-LIVE: Bild vom Roboter holen
-                List<Object> imageRemote = (List<Object>) video.getImageRemote(cameraHandle);
-                if (imageRemote != null) {
-                    BufferedImage img = Util.toBufferedImage_picture(imageRemote);
-                    
-                    // Update Fenster
-                    if (imageWindow != null) imageWindow.update(img);
-                    
-                    // Update WebServer (Browser-Anzeige)
-                    if (webStreamer != null) webStreamer.update(img);
-                }
-            } catch (Exception e) {
-                // Einzelne Frame-Fehler ignorieren
+        // Sendet HD-JPEGs vom Pepper
+        String cmd = "gst-launch-0.10 v4l2src device=/dev/video0 ! video/x-raw-yuv,width=1280,height=960,framerate=10/1 ! ffmpegcolorspace ! jpegenc quality=80 ! tcpserversink port=5000";
+        ChannelExec channel = (ChannelExec) sshSession.openChannel("exec");
+        channel.setCommand(cmd);
+        channel.connect();
+    }
+
+    private void startLocalPipeline() {
+        String pipeDesc = "tcpclientsrc host=" + config.pepperIP() + " port=5000 ! jpegparse ! jpegdec ! videoconvert ! video/x-raw, format=BGRx ! appsink name=sink sync=false";
+        pipeline = (Pipeline) Gst.parseLaunch(pipeDesc);
+        AppSink sink = (AppSink) pipeline.getElementByName("sink");
+        
+        sink.set("emit-signals", true);
+        sink.set("max-buffers", 1);
+        sink.set("drop", true);
+
+        sink.connect((AppSink.NEW_SAMPLE) elem -> {
+            Sample sample = elem.pullSample();
+            org.freedesktop.gstreamer.Buffer buffer = sample.getBuffer();
+            Structure struct = sample.getCaps().getStructure(0);
+            int w = struct.getInteger("width");
+            int h = struct.getInteger("height");
+
+            ByteBuffer bb = buffer.map(false);
+            BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+            int[] data = new int[w * h];
+            bb.asIntBuffer().get(data);
+            img.setRGB(0, 0, w, h, data, 0, w);
+            buffer.unmap();
+            sample.dispose();
+
+            // Das aktuellste Bild zwischenspeichern
+            this.capturedImage = img; 
+
+            if (!isWaitingForConfirmation) {
+                webStreamer.update(img);
             }
-        }, 0, 66, TimeUnit.MILLISECONDS);
+            return FlowReturn.OK;
+        });
+        pipeline.play();
     }
 
-    private void takeAndPrintPicture() throws Exception {
-        ALTextToSpeech tts = new ALTextToSpeech(application.session());
-        
-        // 1. Kopf fixieren & Ausrichten (wichtig für scharfe Fotos)
-        motion.setStiffnesses("Head", 1.0f);
-        motion.angleInterpolationWithSpeed("HeadPitch", 0.0f, 0.2f);
-        motion.angleInterpolationWithSpeed("HeadYaw", 0.0f, 0.2f);
-        
-        // 2. Countdown ohne Körperbewegung
-        animatedSpeech.say("^mode(disabled) Achtung! Drei... zwei... eins...");
-        
-        // 3. Shutter & Blitz ausführen
-        playCameraFeedback(); 
-        
-        // Kleiner technischer Wait, damit das Bild im Buffer den Blitz/Moment stabil hat
-        Thread.sleep(100); 
-        
-        BufferedImage finalPhoto = imageWindow.getCurrentImage();
-        
-        if (finalPhoto != null) {
-            tts.say("Das Foto ist im Kasten.");
-            new Thread(() -> {
-                Util.printImage(finalPhoto, config.width(), config.height(), config.numberImages(), config.printerIP());
-            }).start();
+    private void takeAndShowPicture() {
+        try {
+            speechRecognition.pause(true);
+            animatedSpeech.say("Drei... zwei... eins...");
             
-            animatedSpeech.say("Es wird nun gedruckt.");
-        }
+            isWaitingForConfirmation = true;
+            
+            if (this.capturedImage != null) {
+                // Branding auf das letzte Frame anwenden
+                this.capturedImage = Util.applyBranding(this.capturedImage);
+                webStreamer.update(this.capturedImage); // Standbild im Webbrowser
+            }
+            
+            animatedSpeech.say("Foto fertig. Rechts zum Drucken, links zum Löschen.");
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
-    private void playCameraFeedback() {
+    private void confirmAndPrint() {
+        isWaitingForConfirmation = false;
         try {
-            ALTextToSpeech tts = new ALTextToSpeech(application.session());
-            ALLeds leds = new ALLeds(application.session());
-
-            // A. Verschluss schließt (LEDs aus)
-            leds.fadeRGB("FaceLeds", 0x000000, 0.05f); 
-            Thread.sleep(150);
-
-            // B. Blitz & Klick (Der Moment der Aufnahme)
-            leds.fadeRGB("FaceLeds", "white", 0.01f); 
-            tts.say("\\vct=135\\ *Klick*"); 
-
-            // C. Nachleuchten & Recovery (Asynchron via Scheduler)
-            scheduler.schedule(() -> {
-                try {
-                    leds.fadeRGB("FaceLeds", "yellow", 0.05f);
-                    scheduler.schedule(() -> {
-                        try {
-                            leds.fadeRGB("FaceLeds", "blue", 0.8f);
-                        } catch (Exception e) {}
-                    }, 200, TimeUnit.MILLISECONDS);
-                } catch (Exception e) {}
-            }, 100, TimeUnit.MILLISECONDS);
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+            tts.say("Drucke.");
+            new Thread(() -> {
+                Util.printImage(capturedImage, config.width(), config.height(), config.numberImages(), config.printerIP());
+            }).start();
+            stopGStreamer();
+            resetAfterAction();
+        } catch (Exception e) {}
     }
-    
-    private void stopApplication() {
+
+    private void rejectAndRestart() {
+        isWaitingForConfirmation = false;
         try {
-            isStopping = true;
-            isPreviewRunning = false;
-            scheduler.shutdownNow();
-            if (cameraHandle != null) video.unsubscribe(cameraHandle);
-            if (imageWindow != null) imageWindow.dispose();
-            motion.rest();
-            application.stop();
-            System.exit(0);
-        } catch (Exception e) { System.exit(1); }
+            animatedSpeech.say("Foto gelöscht.");
+            stopGStreamer();
+            resetAfterAction();
+            startSelfieProcess(); // Sofort neu starten
+        } catch (Exception e) {}
     }
 
-    private PepperSelfieConfig loadConfiguration() {
-        Path configPath = Paths.get(System.getProperty("user.dir"), "PepperSelfie.yaml");
-        ConfigurationProvider provider = new ConfigurationProviderBuilder()
-            .withConfigurationSource(new FilesConfigurationSource(() -> Collections.singletonList(configPath)))
-            .build();
-        return provider.bind("", PepperSelfieConfig.class);
+    private void resetAfterAction() {
+        isPreviewRunning = false;
+        try {
+            speechRecognition.unsubscribe(APP_HANDLE);
+        } catch (Exception e) {}
     }
 
-    // Erweitertes Interface für die YAML-Parameter
+    private void stopGStreamer() {
+        if (pipeline != null) pipeline.stop();
+        try {
+            if (sshSession != null) {
+                ChannelExec killCmd = (ChannelExec) sshSession.openChannel("exec");
+                killCmd.setCommand("killall gst-launch-0.10");
+                killCmd.connect();
+                sshSession.disconnect();
+            }
+        } catch (Exception e) {}
+    }
+
     public interface PepperSelfieConfig {
-        String pepperIP();
-        String pepperPort();
+        // Verbindung zu Pepper (QiSDK & SSH)
+        String pepperIP(); 
+        String pepperPort();      // QiSDK Port (meist 9559)
+        String pepperUser();      // SSH Username (meist "nao")
+        String pepperPassword();  // SSH Passwort
+        Integer sshPort();        // SSH Port (meist 22)
+
+        // Drucker-Einstellungen
         String printerIP();
-        Integer width();
-        Integer height();
-        Integer numberImages();
-        String imageText();
-        String imageDate();
+        Integer width();          // Breite in mm
+        Integer height();         // Höhe in mm
+        Integer numberImages();   // Anzahl Kopien
+
+        // Branding-Einstellungen
+        String imageText(); 
+        String imageDate(); 
         Integer positionX();
     }
 }
