@@ -18,5 +18,8 @@
 	<classpathentry kind="lib" path="/home/ros/core-math-1.3.10.jar"/>
 	<classpathentry kind="lib" path="/home/ros/core-1.3.10.jar"/>
 	<classpathentry kind="lib" path="/home/ros/image-processing-1.3.10.jar"/>
+	<classpathentry kind="lib" path="/home/ros/gst1-java-core-1.4.0.jar"/>
+	<classpathentry kind="lib" path="/home/ros/jna-5.12.1.jar"/>
+	<classpathentry kind="lib" path="/home/ros/jsch-0.1.55.jar"/>
 	<classpathentry kind="output" path="bin"/>
 </classpath>

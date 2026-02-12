@@ -1,7 +1,7 @@
 pepperIP: 192.168.0.41
 pepperPort: 9559
 pepperUser: nao
-pepperPassword: nao
+pepperPassword: P3pp3r2!
 sshPort: 22
 
 printerIP: 192.168.0.48
